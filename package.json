@@ -1,0 +1,17 @@
+{
+  "name": "squishy-img-optimizer",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Squishy image optimizer web app and API for AVIF/WebP compression.",
+  "scripts": {
+    "dev": "node src/server.js",
+    "start": "NODE_ENV=production node src/server.js"
+  },
+  "dependencies": {
+    "sharp": "^0.34.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

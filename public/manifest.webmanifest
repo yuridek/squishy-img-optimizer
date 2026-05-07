@@ -1,0 +1,17 @@
+{
+  "name": "Squishy",
+  "short_name": "Squishy",
+  "description": "Simple AVIF and WebP image optimizer.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#ff3d7f",
+  "icons": [
+    {
+      "src": "/squishy-app-icon.png",
+      "sizes": "1024x1024",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

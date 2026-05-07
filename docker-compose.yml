@@ -1,0 +1,12 @@
+services:
+  squishy:
+    build: .
+    container_name: squishy-img-optimizer
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 4173
+      MAX_UPLOAD_BYTES: 26214400
+    ports:
+      - "4173:4173"

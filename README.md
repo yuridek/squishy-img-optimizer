@@ -63,3 +63,31 @@ Multipart fields:
 - `lossless`: `true` or `false`
 
 The response contains the optimized image as a base64 payload plus size metadata.
+
+`POST /api/convert`
+
+Multipart fields are the same as `/api/optimize`, but the response body is the optimized image bytes directly. This is useful for scripts, Finder Quick Actions and other automation flows.
+
+Example:
+
+```bash
+curl -fsS -X POST http://localhost:4173/api/convert \
+  -F "image=@sample.png" \
+  -F "format=avif" \
+  -F "quality=50" \
+  -F "effort=4" \
+  -F "lossless=false" \
+  -o sample.avif
+```
+
+Optional API protection:
+
+```bash
+SQUISHY_API_KEY="change-me" npm run start
+```
+
+When `SQUISHY_API_KEY` is set, API requests must include:
+
+```text
+Authorization: Bearer change-me
+```

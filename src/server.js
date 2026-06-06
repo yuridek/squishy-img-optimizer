@@ -10,8 +10,10 @@ const sharp = require('sharp');
 const PORT = Number(process.env.PORT || 4173);
 const HOST = process.env.HOST || '127.0.0.1';
 const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_BYTES || 25 * 1024 * 1024);
+const API_KEY = process.env.SQUISHY_API_KEY || '';
 const ROOT = join(fileURLToPath(new URL('.', import.meta.url)), '..');
 const PUBLIC_DIR = join(ROOT, 'public');
+const IMAGE_MIME_TYPES = new Set(['image/png', 'image/jpeg', 'image/webp', 'image/avif']);
 
 const MIME_TYPES = {
   '.html': 'text/html; charset=utf-8',
@@ -27,13 +29,20 @@ const MIME_TYPES = {
 
 createServer(async (request, response) => {
   try {
-    if ((request.method === 'GET' || request.method === 'HEAD') && request.url === '/healthz') {
+    const url = new URL(request.url, `http://${request.headers.host}`);
+
+    if ((request.method === 'GET' || request.method === 'HEAD') && url.pathname === '/healthz') {
       sendJson(response, 200, { ok: true, service: 'squishy' });
       return;
     }
 
-    if (request.method === 'POST' && request.url === '/api/optimize') {
+    if (request.method === 'POST' && url.pathname === '/api/optimize') {
       await handleOptimize(request, response);
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/convert') {
+      await handleConvert(request, response);
       return;
     }
 
@@ -45,19 +54,67 @@ createServer(async (request, response) => {
     sendJson(response, 405, { error: 'Method not allowed' });
   } catch (error) {
     console.error(error);
-    sendJson(response, 500, { error: 'Optimization failed', detail: error.message });
+    sendJson(response, error.status || 500, {
+      error: error.status ? error.message : 'Optimization failed',
+      detail: error.status ? undefined : error.message
+    });
   }
 }).listen(PORT, HOST, () => {
   console.log(`Squishy running at http://${HOST}:${PORT}`);
 });
 
 async function handleOptimize(request, response) {
+  if (!isAuthorized(request)) {
+    sendJson(response, 401, { error: 'Unauthorized' });
+    return;
+  }
+
+  const { image, options } = await readOptimizeRequest(request);
+  const result = await optimizeImage(image, options);
+
+  sendJson(response, 200, {
+    filename: result.filename,
+    format: result.format,
+    mime: result.mime,
+    quality: result.quality,
+    effort: result.effort,
+    lossless: result.lossless,
+    original: result.original,
+    optimized: {
+      bytes: result.output.length,
+      base64: result.output.toString('base64')
+    },
+    savings: result.savings
+  });
+}
+
+async function handleConvert(request, response) {
+  if (!isAuthorized(request)) {
+    sendJson(response, 401, { error: 'Unauthorized' });
+    return;
+  }
+
+  const { image, options } = await readOptimizeRequest(request);
+  const result = await optimizeImage(image, { ...options, format: options.format || 'avif' });
+
+  response.writeHead(200, {
+    'Content-Type': result.mime,
+    'Content-Length': result.output.length,
+    'Content-Disposition': `attachment; filename="${escapeHeaderValue(result.filename)}"`,
+    'X-Squishy-Original-Bytes': String(result.original.bytes),
+    'X-Squishy-Optimized-Bytes': String(result.output.length),
+    'X-Squishy-Savings-Percent': String(result.savings.percent),
+    'Cache-Control': 'no-store'
+  });
+  response.end(result.output);
+}
+
+async function readOptimizeRequest(request) {
   const contentType = request.headers['content-type'] || '';
   const boundary = getBoundary(contentType);
 
   if (!boundary) {
-    sendJson(response, 400, { error: 'Expected multipart/form-data upload' });
-    return;
+    throw new HttpError(400, 'Expected multipart/form-data upload');
   }
 
   const body = await readRequestBody(request);
@@ -65,15 +122,29 @@ async function handleOptimize(request, response) {
   const image = form.files.image;
 
   if (!image) {
-    sendJson(response, 400, { error: 'Missing image file' });
-    return;
+    throw new HttpError(400, 'Missing image file');
   }
 
-  const format = normalizeFormat(form.fields.format || 'avif');
-  const quality = clamp(Number(form.fields.quality || 50), 1, 100);
-  const effort = clamp(Number(form.fields.effort || 4), 0, 9);
-  const lossless = form.fields.lossless === 'true';
+  if (!IMAGE_MIME_TYPES.has(image.mime)) {
+    throw new HttpError(415, 'Unsupported image type');
+  }
 
+  return {
+    image,
+    options: {
+      format: normalizeFormat(form.fields.format || 'avif'),
+      quality: clamp(Number(form.fields.quality || 50), 1, 100),
+      effort: clamp(Number(form.fields.effort || 4), 0, 9),
+      lossless: form.fields.lossless === 'true'
+    }
+  };
+}
+
+async function optimizeImage(image, options) {
+  const format = normalizeFormat(options.format || 'avif');
+  const quality = clamp(Number(options.quality || 50), 1, 100);
+  const effort = clamp(Number(options.effort || 4), 0, 9);
+  const lossless = options.lossless === true;
   const input = sharp(image.data, { limitInputPixels: 80_000_000 });
   const metadata = await input.metadata();
   let pipeline = input.rotate();
@@ -96,30 +167,29 @@ async function handleOptimize(request, response) {
 
   const output = await pipeline.toBuffer();
   const mime = format === 'avif' ? 'image/avif' : 'image/webp';
+  const original = {
+    filename: image.filename,
+    mime: image.mime,
+    bytes: image.data.length,
+    width: metadata.width || null,
+    height: metadata.height || null
+  };
+  const savings = {
+    bytes: image.data.length - output.length,
+    percent: image.data.length ? Math.round((1 - output.length / image.data.length) * 1000) / 10 : 0
+  };
 
-  sendJson(response, 200, {
+  return {
     filename: buildOutputFilename(image.filename, format),
     format,
     mime,
     quality,
     effort,
     lossless,
-    original: {
-      filename: image.filename,
-      mime: image.mime,
-      bytes: image.data.length,
-      width: metadata.width || null,
-      height: metadata.height || null
-    },
-    optimized: {
-      bytes: output.length,
-      base64: output.toString('base64')
-    },
-    savings: {
-      bytes: image.data.length - output.length,
-      percent: image.data.length ? Math.round((1 - output.length / image.data.length) * 1000) / 10 : 0
-    }
-  });
+    original,
+    output,
+    savings
+  };
 }
 
 async function serveStatic(request, response) {
@@ -223,7 +293,25 @@ function buildOutputFilename(filename, format) {
   return `${clean || 'squishy-output'}.${format}`;
 }
 
+function isAuthorized(request) {
+  if (!API_KEY) return true;
+
+  const header = request.headers.authorization || '';
+  return header === `Bearer ${API_KEY}`;
+}
+
+function escapeHeaderValue(value) {
+  return String(value).replace(/["\\\r\n]/g, '_');
+}
+
 function sendJson(response, status, payload) {
   response.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
   response.end(JSON.stringify(payload));
+}
+
+class HttpError extends Error {
+  constructor(status, message) {
+    super(message);
+    this.status = status;
+  }
 }
